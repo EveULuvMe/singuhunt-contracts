@@ -1,0 +1,21 @@
+[package]
+name = "singuhunt"
+edition = "2024.beta"
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "testnet-v1.66.2" }
+# world = { local = "../../../world-contracts/contracts/world" }
+# World dependency commented out for initial deployment (SinguHunt core is standalone)
+# Re-enable when integrating with EVE Frontier SSU extensions
+
+[addresses]
+singuhunt = "0x0"
+
+[dev-addresses]
+singuhunt = "0x0"
+
+[environments.testnet_utopia]
+chain-id = "4c78adac"
+original-published-id = "0x0"
+latest-published-id = "0x0"
+published-version = "1"
