@@ -17,6 +17,6 @@ singuhunt = "0x0"
 
 [environments.testnet_utopia]
 chain-id = "4c78adac"
-original-published-id = "0x0"
-latest-published-id = "0x0"
+original-published-id = "0x4777d7fd135bbdb43bb89f35634442e9e5d9f26409ab1541702dd3921aabc92d"
+latest-published-id = "0x4777d7fd135bbdb43bb89f35634442e9e5d9f26409ab1541702dd3921aabc92d"
 published-version = "1"
