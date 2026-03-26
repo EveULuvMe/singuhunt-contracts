@@ -1,12 +1,13 @@
-/// SinguHunt v2 - Dragon Ball Singularity Hunting Game for EVE Frontier
+/// SinguHunt v2 - Singu Shard Singularity Hunting Game for EVE Frontier
 ///
 /// Game Flow:
 /// 1. Every day at 00:00 UTC, a new hunt starts from the bulletin board (start gate)
 /// 2. A configurable number of Singu are scattered across the selected active gate locations
-/// 3. Each dragon ball can only be claimed by the FIRST player to arrive
+/// 3. Each singu shard can only be claimed by the FIRST player to arrive
 /// 4. Collect the required number of Singu and deposit them at the end gate
 /// 5. Earn a permanent, non-transferable achievement NFT
 module singuhunt::singuhunt {
+    use std::hash as std_hash;
     use sui::balance::{Self, Balance};
     use sui::clock::{Self, Clock};
     use sui::coin::{Self, Coin};
@@ -14,8 +15,11 @@ module singuhunt::singuhunt {
     use sui::event;
     use sui::hash;
     use sui::table::{Self, Table};
+    use sui::token::Token;
     use sui::bcs;
     use singuvault::lux::LUX;
+    use singuhunt::singu_shard_token::{Self as singu_shard_token, SINGU_SHARD_TOKEN, SinguShardTreasury};
+    use singuhunt::achievement_token::{Self as achievement_token, AchievementTreasury};
     use singuhunt::sig_verify;
 
     // ============ Error Codes ============
@@ -59,6 +63,7 @@ module singuhunt::singuhunt {
     const E_NOT_TEAM_MODE: u64 = 38;
     const E_INVALID_REVEAL_TIME: u64 = 39;
     const E_INVALID_REGISTRATION_FEE: u64 = 40;
+    const E_REGISTRATION_PASS_MISMATCH: u64 = 41;
 
     // ============ Constants ============
     const DRAGON_BALL_COUNT: u64 = 7;
@@ -133,7 +138,7 @@ module singuhunt::singuhunt {
     public struct TeamRosterKey has copy, drop, store { epoch: u64, team_id: u64 }
 
     /// Per-team per-gate completion marker.
-    public struct TeamGateClaimKey has copy, drop, store { epoch: u64, team_id: u64, ball_index: u64 }
+    public struct TeamGateClaimKey has copy, drop, store { epoch: u64, team_id: u64, shard_index: u64 }
 
     /// Maximum number of winners for an epoch (calculated from registration count)
     public struct WinnerSlotsKey has copy, drop, store { epoch: u64 }
@@ -154,7 +159,7 @@ module singuhunt::singuhunt {
         gate_id: address,
         /// Display name
         name: vector<u8>,
-        /// Whether a dragon ball is placed here
+        /// Whether a singu shard is placed here
         has_ball: bool,
         /// Whether the ball has been collected
         ball_collected: bool,
@@ -194,6 +199,33 @@ module singuhunt::singuhunt {
         reveal_at: u64,
     }
 
+    /// Transferable right to activate registration for a specific epoch and mode.
+    public struct RegistrationPass has key, store {
+        id: UID,
+        epoch: u64,
+        mode: u8,
+        fee_paid_lux: u64,
+        issued_at: u64,
+    }
+
+    public struct ClaimTicketPayload has copy, drop, store {
+        domain: vector<u8>,
+        player: address,
+        epoch: u64,
+        shard_index: u64,
+        assembly_id: address,
+        ticket_expires_at_ms: u64,
+        ticket_nonce: u64,
+    }
+
+    public struct DecryptTicketPayload has copy, drop, store {
+        domain: vector<u8>,
+        player: address,
+        epoch: u64,
+        ticket_expires_at_ms: u64,
+        ticket_nonce: u64,
+    }
+
     /// Main game state - shared object
     public struct GameState has key {
         id: UID,
@@ -213,14 +245,16 @@ module singuhunt::singuhunt {
         required_singu_count: u64,
         /// Candidate gate pool. Admin can register 20+ gates here.
         gate_pool: vector<GateConfig>,
-        /// Active dragon ball locations (gates) for the current epoch
-        ball_gates: vector<GateLocation>,
+        /// Active singu shard locations (gates) for the current epoch
+        shard_gates: vector<GateLocation>,
         /// Track per-epoch collections: key = epoch, value = table of player -> collected count
         epoch_collections: Table<u64, Table<address, u64>>,
         /// Achievement holders
         achievement_holders: Table<address, u64>,
         /// Trusted off-chain signer that attests the player is interacting from a valid assembly context
         ticket_signer: address,
+        /// Raw ED25519 public key used for ticket verification
+        ticket_signer_public_key: vector<u8>,
         /// Track used claim tickets by digest to block replay attacks
         used_claim_tickets: Table<address, bool>,
         /// Accumulated registration fees collected in LUX
@@ -231,12 +265,12 @@ module singuhunt::singuhunt {
         total_lux_collected: u64,
     }
 
-    /// Dragon Ball token - collected at gate locations
-    public struct DragonBall has key, store {
+    /// Singu shard metadata record. The transferable asset is a closed-loop Token<SINGU_SHARD>.
+    public struct SinguShardRecord has key {
         id: UID,
         epoch: u64,
-        /// Which active ball index this token represents for the epoch
-        star_index: u64,
+        /// Which active shard index this token represents for the epoch
+        shard_index: u64,
         /// Gate where it was collected
         gate_id: address,
         gate_name: vector<u8>,
@@ -250,7 +284,7 @@ module singuhunt::singuhunt {
         delivered_at: u64,
     }
 
-    /// Permanent achievement NFT - soulbound (no `store`)
+    /// Achievement metadata record. The transferable asset is a closed-loop Token<ACHIEVEMENT>.
     public struct AchievementNFT has key {
         id: UID,
         completed_epoch: u64,
@@ -271,12 +305,12 @@ module singuhunt::singuhunt {
         end_time: u64,
         start_gate: address,
         end_gate: address,
-        ball_gates: vector<address>,
+        shard_gates: vector<address>,
     }
 
-    public struct DragonBallCollected has copy, drop {
+    public struct SinguShardCollected has copy, drop {
         epoch: u64,
-        star_index: u64,
+        shard_index: u64,
         collector: address,
         gate_id: address,
     }
@@ -287,9 +321,9 @@ module singuhunt::singuhunt {
         achievement_number: u64,
     }
 
-    public struct DragonBallDelivered has copy, drop {
+    public struct SinguShardDelivered has copy, drop {
         epoch: u64,
-        star_index: u64,
+        shard_index: u64,
         deliverer: address,
         gate_id: address,
     }
@@ -302,9 +336,9 @@ module singuhunt::singuhunt {
         epoch: u64,
     }
 
-    public struct DragonBallBurned has copy, drop {
+    public struct SinguShardBurned has copy, drop {
         epoch: u64,
-        star_index: u64,
+        shard_index: u64,
         burner: address,
     }
 
@@ -337,6 +371,21 @@ module singuhunt::singuhunt {
         fee_paid_lux: u64,
     }
 
+    public struct RegistrationPassPurchased has copy, drop {
+        next_epoch: u64,
+        player: address,
+        mode: u8,
+        fee_paid_lux: u64,
+    }
+
+    public struct RegistrationActivated has copy, drop {
+        next_epoch: u64,
+        player: address,
+        mode: u8,
+        reg_count: u64,
+        fee_paid_lux: u64,
+    }
+
     public struct RegistrationFeesWithdrawn has copy, drop {
         amount: u64,
     }
@@ -361,7 +410,7 @@ module singuhunt::singuhunt {
     public struct TeamGateCompleted has copy, drop {
         epoch: u64,
         team_id: u64,
-        star_index: u64,
+        shard_index: u64,
         player: address,
     }
 
@@ -396,10 +445,11 @@ module singuhunt::singuhunt {
             end_gate_name: b"",
             required_singu_count: DRAGON_BALL_COUNT,
             gate_pool: vector::empty(),
-            ball_gates: vector::empty(),
+            shard_gates: vector::empty(),
             epoch_collections: table::new(ctx),
             achievement_holders: table::new(ctx),
             ticket_signer: @0x0,
+            ticket_signer_public_key: b"",
             used_claim_tickets: table::new(ctx),
             registration_fee_pool: balance::zero(),
             total_achievements: 0,
@@ -461,7 +511,7 @@ module singuhunt::singuhunt {
     }
 
     /// Backwards-compatible helper: configure the first 7 legacy entries in the gate pool.
-    public entry fun set_ball_gate(
+    public entry fun set_shard_gate(
         _admin: &AdminCap,
         game: &mut GameState,
         index: u64,
@@ -478,9 +528,11 @@ module singuhunt::singuhunt {
     public entry fun set_ticket_signer(
         _admin: &AdminCap,
         game: &mut GameState,
-        signer: address,
+        signer_public_key: vector<u8>,
     ) {
+        let signer = sig_verify::derive_address_from_public_key(signer_public_key);
         game.ticket_signer = signer;
+        game.ticket_signer_public_key = signer_public_key;
         event::emit(TicketSignerConfigured { signer });
     }
 
@@ -622,8 +674,8 @@ module singuhunt::singuhunt {
         });
     }
 
-    /// Player registers for the upcoming hunt session.
-    public entry fun register_for_hunt(
+    /// Player purchases a transferable registration pass for the upcoming hunt session.
+    public entry fun buy_registration_pass(
         game: &mut GameState,
         fee_coin: Coin<LUX>,
         clock: &Clock,
@@ -647,19 +699,62 @@ module singuhunt::singuhunt {
         let reg_end = *dynamic_field::borrow<RegEndTimeKey, u64>(&game.id, RegEndTimeKey {});
         assert!(now <= reg_end, E_REGISTRATION_NOT_OPEN);
 
-        // Check not already registered
+        assert!(paid_fee == required_fee, E_INVALID_REGISTRATION_FEE);
+
+        balance::join(&mut game.registration_fee_pool, coin::into_balance(fee_coin));
+        game.total_lux_collected = game.total_lux_collected + paid_fee;
+
+        let pass = RegistrationPass {
+            id: object::new(ctx),
+            epoch: next_epoch,
+            mode,
+            fee_paid_lux: paid_fee,
+            issued_at: now,
+        };
+
+        event::emit(RegistrationPassPurchased {
+            next_epoch,
+            player,
+            mode,
+            fee_paid_lux: paid_fee,
+        });
+
+        transfer::transfer(pass, player);
+    }
+
+    /// Direct registration path kept for backwards compatibility with the current frontend.
+    /// This immediately binds the spot to the current sender instead of minting a transferable pass.
+    public entry fun register_for_hunt(
+        game: &mut GameState,
+        fee_coin: Coin<LUX>,
+        clock: &Clock,
+        ctx: &mut TxContext,
+    ) {
+        let now = clock::timestamp_ms(clock);
+        let player = ctx.sender();
+        let next_epoch = game.current_epoch + 1;
+        let mode = *dynamic_field::borrow<RegModeKey, u8>(&game.id, RegModeKey {});
+        let required_fee = registration_fee_for_mode(mode);
+        let paid_fee = coin::value(&fee_coin);
+
+        assert!(
+            dynamic_field::exists_(&game.id, RegPhaseKey {}) &&
+            *dynamic_field::borrow<RegPhaseKey, bool>(&game.id, RegPhaseKey {}),
+            E_REGISTRATION_NOT_OPEN,
+        );
+
+        let reg_end = *dynamic_field::borrow<RegEndTimeKey, u64>(&game.id, RegEndTimeKey {});
+        assert!(now <= reg_end, E_REGISTRATION_NOT_OPEN);
         assert!(
             !dynamic_field::exists_(&game.id, RegPlayerKey { epoch: next_epoch, player }),
             E_ALREADY_REGISTERED,
         );
         assert!(paid_fee == required_fee, E_INVALID_REGISTRATION_FEE);
 
-        // Register player
         dynamic_field::add(&mut game.id, RegPlayerKey { epoch: next_epoch, player }, true);
         balance::join(&mut game.registration_fee_pool, coin::into_balance(fee_coin));
         game.total_lux_collected = game.total_lux_collected + paid_fee;
 
-        // Increment count
         let count = dynamic_field::borrow_mut<RegCountKey, u64>(&mut game.id, RegCountKey { epoch: next_epoch });
         *count = *count + 1;
         let registration_index = *count;
@@ -672,6 +767,61 @@ module singuhunt::singuhunt {
             player,
             reg_count: registration_index,
             fee_paid_lux: paid_fee,
+        });
+    }
+
+    /// Activate a purchased registration pass. This binds the pass to the current owner
+    /// and puts the address into the formal registration roster used by the hunt.
+    public entry fun activate_registration(
+        game: &mut GameState,
+        pass: RegistrationPass,
+        clock: &Clock,
+        ctx: &mut TxContext,
+    ) {
+        let now = clock::timestamp_ms(clock);
+        let player = ctx.sender();
+        let next_epoch = game.current_epoch + 1;
+        let current_mode = *dynamic_field::borrow<RegModeKey, u8>(&game.id, RegModeKey {});
+
+        assert!(
+            dynamic_field::exists_(&game.id, RegPhaseKey {}) &&
+            *dynamic_field::borrow<RegPhaseKey, bool>(&game.id, RegPhaseKey {}),
+            E_REGISTRATION_NOT_OPEN,
+        );
+
+        let reg_end = *dynamic_field::borrow<RegEndTimeKey, u64>(&game.id, RegEndTimeKey {});
+        assert!(now <= reg_end, E_REGISTRATION_NOT_OPEN);
+        assert!(
+            !dynamic_field::exists_(&game.id, RegPlayerKey { epoch: next_epoch, player }),
+            E_ALREADY_REGISTERED,
+        );
+        assert!(pass.epoch == next_epoch, E_REGISTRATION_PASS_MISMATCH);
+        assert!(pass.mode == current_mode, E_REGISTRATION_PASS_MISMATCH);
+
+        dynamic_field::add(&mut game.id, RegPlayerKey { epoch: next_epoch, player }, true);
+
+        let count = dynamic_field::borrow_mut<RegCountKey, u64>(&mut game.id, RegCountKey { epoch: next_epoch });
+        *count = *count + 1;
+        let registration_index = *count;
+
+        dynamic_field::add(&mut game.id, RegPositionKey { epoch: next_epoch, player }, registration_index);
+        dynamic_field::add(&mut game.id, RegOrderKey { epoch: next_epoch, order: registration_index }, player);
+
+        let RegistrationPass { id, epoch: _, mode: _, fee_paid_lux, issued_at: _ } = pass;
+        object::delete(id);
+
+        event::emit(RegistrationActivated {
+            next_epoch,
+            player,
+            mode: current_mode,
+            reg_count: registration_index,
+            fee_paid_lux,
+        });
+        event::emit(PlayerRegistered {
+            next_epoch,
+            player,
+            reg_count: registration_index,
+            fee_paid_lux,
         });
     }
 
@@ -922,7 +1072,7 @@ module singuhunt::singuhunt {
         game.total_hunts = game.total_hunts + 1;
 
         // Rebuild the active gate set from the selected gate pool entries.
-        game.ball_gates = vector::empty();
+        game.shard_gates = vector::empty();
 
         let mut i: u64 = 0;
         let mut ball_gate_ids = vector::empty<address>();
@@ -934,8 +1084,8 @@ module singuhunt::singuhunt {
             assert!(pool_gate.gate_id != @0x0, E_POOL_GATE_NOT_CONFIGURED);
 
             let mut j: u64 = 0;
-            while (j < game.ball_gates.length()) {
-                let existing_gate = &game.ball_gates[j];
+            while (j < game.shard_gates.length()) {
+                let existing_gate = &game.shard_gates[j];
                 assert!(existing_gate.gate_id != pool_gate.gate_id, E_DUPLICATE_ACTIVE_GATE);
                 j = j + 1;
             };
@@ -950,7 +1100,7 @@ module singuhunt::singuhunt {
                 deliverer: @0x0,
             };
 
-            game.ball_gates.push_back(gate);
+            game.shard_gates.push_back(gate);
             ball_gate_ids.push_back(pool_gate.gate_id);
             i = i + 1;
         };
@@ -967,7 +1117,7 @@ module singuhunt::singuhunt {
             end_time: now + game_duration_ms,
             start_gate: game.start_gate,
             end_gate: game.end_gate,
-            ball_gates: ball_gate_ids,
+            shard_gates: ball_gate_ids,
         });
     }
 
@@ -1016,41 +1166,43 @@ module singuhunt::singuhunt {
     fun build_claim_ticket_message(
         player: address,
         epoch: u64,
-        ball_index: u64,
+        shard_index: u64,
         assembly_id: address,
         ticket_expires_at_ms: u64,
         ticket_nonce: u64,
     ): vector<u8> {
-        let mut bytes = b"SINGUHUNT_CLAIM_V1";
-        vector::append(&mut bytes, bcs::to_bytes(&player));
-        vector::append(&mut bytes, bcs::to_bytes(&epoch));
-        vector::append(&mut bytes, bcs::to_bytes(&ball_index));
-        vector::append(&mut bytes, bcs::to_bytes(&assembly_id));
-        vector::append(&mut bytes, bcs::to_bytes(&ticket_expires_at_ms));
-        vector::append(&mut bytes, bcs::to_bytes(&ticket_nonce));
-        bytes
+        bcs::to_bytes(&ClaimTicketPayload {
+            domain: b"SINGUHUNT_CLAIM_V2",
+            player,
+            epoch,
+            shard_index,
+            assembly_id,
+            ticket_expires_at_ms,
+            ticket_nonce,
+        })
     }
 
     fun claim_ticket_key(message: &vector<u8>): address {
-        sui::address::from_bytes(hash::blake2b256(message))
+        sui::address::from_bytes(std_hash::sha3_256(*message))
     }
 
     fun build_deliver_ticket_message(
         player: address,
         epoch: u64,
-        ball_index: u64,
+        shard_index: u64,
         assembly_id: address,
         ticket_expires_at_ms: u64,
         ticket_nonce: u64,
     ): vector<u8> {
-        let mut bytes = b"SINGUHUNT_DELIVER_V1";
-        vector::append(&mut bytes, bcs::to_bytes(&player));
-        vector::append(&mut bytes, bcs::to_bytes(&epoch));
-        vector::append(&mut bytes, bcs::to_bytes(&ball_index));
-        vector::append(&mut bytes, bcs::to_bytes(&assembly_id));
-        vector::append(&mut bytes, bcs::to_bytes(&ticket_expires_at_ms));
-        vector::append(&mut bytes, bcs::to_bytes(&ticket_nonce));
-        bytes
+        bcs::to_bytes(&ClaimTicketPayload {
+            domain: b"SINGUHUNT_DELIVER_V2",
+            player,
+            epoch,
+            shard_index,
+            assembly_id,
+            ticket_expires_at_ms,
+            ticket_nonce,
+        })
     }
 
     fun build_decrypt_ticket_message(
@@ -1059,19 +1211,21 @@ module singuhunt::singuhunt {
         ticket_expires_at_ms: u64,
         ticket_nonce: u64,
     ): vector<u8> {
-        let mut bytes = b"SINGUHUNT_DECRYPT_V1";
-        vector::append(&mut bytes, bcs::to_bytes(&player));
-        vector::append(&mut bytes, bcs::to_bytes(&epoch));
-        vector::append(&mut bytes, bcs::to_bytes(&ticket_expires_at_ms));
-        vector::append(&mut bytes, bcs::to_bytes(&ticket_nonce));
-        bytes
+        bcs::to_bytes(&DecryptTicketPayload {
+            domain: b"SINGUHUNT_DECRYPT_V2",
+            player,
+            epoch,
+            ticket_expires_at_ms,
+            ticket_nonce,
+        })
     }
 
-    /// Collect a dragon ball at a gate (first come, first served) using a
+    /// Collect a singu shard at a gate (first come, first served) using a
     /// short-lived ticket issued after the backend verifies trusted assembly context.
-    public entry fun collect_ball(
+    public entry fun collect_singu_shard(
         game: &mut GameState,
-        ball_index: u64,
+        shard_treasury: &mut SinguShardTreasury,
+        shard_index: u64,
         assembly_id: address,
         ticket_expires_at_ms: u64,
         ticket_nonce: u64,
@@ -1085,29 +1239,30 @@ module singuhunt::singuhunt {
 
         assert!(game.hunt_active, E_HUNT_NOT_ACTIVE);
         assert!(now <= game.hunt_end_time, E_HUNT_EXPIRED);
-        assert!(ball_index < game.ball_gates.length(), E_INVALID_BALL);
-        assert!(game.ticket_signer != @0x0, E_TICKET_SIGNER_NOT_SET);
+        assert!(shard_index < game.shard_gates.length(), E_INVALID_BALL);
+        assert!(game.ticket_signer_public_key.length() == 32, E_TICKET_SIGNER_NOT_SET);
         assert!(now <= ticket_expires_at_ms, E_TICKET_EXPIRED);
 
         // Check the verified assembly matches the configured gate.
-        let gate = &game.ball_gates[ball_index];
+        let gate = &game.shard_gates[shard_index];
         assert!(gate.gate_id == assembly_id, E_ASSEMBLY_MISMATCH);
 
         let claim_message = build_claim_ticket_message(
             player,
             epoch,
-            ball_index,
+            shard_index,
             assembly_id,
             ticket_expires_at_ms,
             ticket_nonce,
         );
         let ticket_key = claim_ticket_key(&claim_message);
         assert!(!game.used_claim_tickets.contains(ticket_key), E_TICKET_REPLAY);
+        let claim_digest = std_hash::sha3_256(claim_message);
         assert!(
-            sig_verify::verify_personal_message_signature(
-                claim_message,
+            sig_verify::verify_hashed_message_signature(
                 ticket_signature,
-                game.ticket_signer,
+                game.ticket_signer_public_key,
+                claim_digest,
             ),
             E_INVALID_TICKET,
         );
@@ -1131,7 +1286,7 @@ module singuhunt::singuhunt {
                     TeamGateClaimKey {
                         epoch,
                         team_id: assignment.team_id,
-                        ball_index,
+                        shard_index,
                     },
                 ),
                 E_TEAM_GATE_ALREADY_CLAIMED,
@@ -1142,7 +1297,7 @@ module singuhunt::singuhunt {
                 TeamGateClaimKey {
                     epoch,
                     team_id: assignment.team_id,
-                    ball_index,
+                    shard_index,
                 },
                 player,
             );
@@ -1167,14 +1322,14 @@ module singuhunt::singuhunt {
             event::emit(TeamGateCompleted {
                 epoch,
                 team_id: assignment.team_id,
-                star_index: ball_index,
+                shard_index: shard_index,
                 player,
             });
         } else {
             assert!(!gate.ball_collected, E_BALL_ALREADY_TAKEN);
 
             // Mark as collected
-            let gate_mut = &mut game.ball_gates[ball_index];
+            let gate_mut = &mut game.shard_gates[shard_index];
             gate_mut.ball_collected = true;
             gate_mut.collector = player;
 
@@ -1190,11 +1345,10 @@ module singuhunt::singuhunt {
                 collections.add(player, 1);
             };
 
-            // Mint dragon ball token
-            let ball = DragonBall {
+            let shard_record = SinguShardRecord {
                 id: object::new(ctx),
                 epoch,
-                star_index: ball_index,
+                shard_index: shard_index,
                 gate_id,
                 gate_name,
                 expires_at: game.hunt_end_time,
@@ -1202,21 +1356,24 @@ module singuhunt::singuhunt {
                 delivered: false,
                 delivered_at: 0,
             };
+            let shard_token = singu_shard_token::mint(shard_treasury, 1, ctx);
 
-            event::emit(DragonBallCollected {
+            event::emit(SinguShardCollected {
                 epoch,
-                star_index: ball_index,
+                shard_index: shard_index,
                 collector: player,
                 gate_id,
             });
 
-            transfer::transfer(ball, player);
+            singu_shard_token::transfer_to_owner(shard_treasury, shard_token, player, ctx);
+            transfer::transfer(shard_record, player);
         };
     }
 
-    public entry fun deliver_ball(
+    public entry fun deliver_singu_shard(
         game: &mut GameState,
-        ball: &mut DragonBall,
+        shard_record: &mut SinguShardRecord,
+        shard_token: &Token<SINGU_SHARD_TOKEN>,
         assembly_id: address,
         ticket_expires_at_ms: u64,
         ticket_nonce: u64,
@@ -1230,56 +1387,58 @@ module singuhunt::singuhunt {
 
         assert!(game.hunt_active, E_HUNT_NOT_ACTIVE);
         assert!(now <= game.hunt_end_time, E_HUNT_EXPIRED);
-        assert!(game.ticket_signer != @0x0, E_TICKET_SIGNER_NOT_SET);
+        assert!(game.ticket_signer_public_key.length() == 32, E_TICKET_SIGNER_NOT_SET);
         assert!(now <= ticket_expires_at_ms, E_TICKET_EXPIRED);
         assert!(assembly_id == game.end_gate, E_INVALID_DELIVER_GATE);
-        assert!(ball.epoch == epoch, E_INVALID_BALL);
-        assert!(ball.collector == player, E_NOT_TOKEN_OWNER);
-        assert!(!ball.delivered, E_ALREADY_DELIVERED);
-        assert!(ball.star_index < game.ball_gates.length(), E_INVALID_BALL);
+        assert!(shard_record.epoch == epoch, E_INVALID_BALL);
+        assert!(shard_record.collector == player, E_NOT_TOKEN_OWNER);
+        assert!(!shard_record.delivered, E_ALREADY_DELIVERED);
+        assert!(shard_record.shard_index < game.shard_gates.length(), E_INVALID_BALL);
+        assert!(singu_shard_token::value(shard_token) == 1, E_INVALID_BALL);
 
         let deliver_message = build_deliver_ticket_message(
             player,
             epoch,
-            ball.star_index,
+            shard_record.shard_index,
             assembly_id,
             ticket_expires_at_ms,
             ticket_nonce,
         );
         let ticket_key = claim_ticket_key(&deliver_message);
         assert!(!game.used_claim_tickets.contains(ticket_key), E_DELIVER_TICKET_REPLAY);
+        let deliver_digest = std_hash::sha3_256(deliver_message);
         assert!(
-            sig_verify::verify_personal_message_signature(
-                deliver_message,
+            sig_verify::verify_hashed_message_signature(
                 ticket_signature,
-                game.ticket_signer,
+                game.ticket_signer_public_key,
+                deliver_digest,
             ),
             E_INVALID_TICKET,
         );
         game.used_claim_tickets.add(ticket_key, true);
 
-        let gate = &mut game.ball_gates[ball.star_index];
-        assert!(gate.gate_id == ball.gate_id, E_ASSEMBLY_MISMATCH);
+        let gate = &mut game.shard_gates[shard_record.shard_index];
+        assert!(gate.gate_id == shard_record.gate_id, E_ASSEMBLY_MISMATCH);
         assert!(gate.ball_collected, E_INVALID_BALL);
         assert!(gate.collector == player, E_NOT_TOKEN_OWNER);
         assert!(!gate.ball_delivered, E_ALREADY_DELIVERED);
 
         gate.ball_delivered = true;
         gate.deliverer = player;
-        ball.delivered = true;
-        ball.delivered_at = now;
+        shard_record.delivered = true;
+        shard_record.delivered_at = now;
 
-        event::emit(DragonBallDelivered {
+        event::emit(SinguShardDelivered {
             epoch,
-            star_index: ball.star_index,
+            shard_index: shard_record.shard_index,
             deliverer: player,
             gate_id: assembly_id,
         });
 
         let mut delivered_count: u64 = 0;
         let mut i: u64 = 0;
-        while (i < game.ball_gates.length()) {
-            if (game.ball_gates[i].ball_delivered) {
+        while (i < game.shard_gates.length()) {
+            if (game.shard_gates[i].ball_delivered) {
                 delivered_count = delivered_count + 1;
             };
             i = i + 1;
@@ -1292,6 +1451,7 @@ module singuhunt::singuhunt {
 
     fun mint_achievement_to(
         game: &mut GameState,
+        achievement_treasury: &mut AchievementTreasury,
         owner: address,
         epoch: u64,
         now: u64,
@@ -1322,11 +1482,14 @@ module singuhunt::singuhunt {
             achievement_number,
         });
 
+        let achievement_token = achievement_token::mint(achievement_treasury, 1, ctx);
+        achievement_token::transfer_to_owner(achievement_treasury, achievement_token, owner, ctx);
         transfer::transfer(achievement, owner);
     }
 
     public entry fun claim_decrypt_achievement(
         game: &mut GameState,
+        achievement_treasury: &mut AchievementTreasury,
         ticket_expires_at_ms: u64,
         ticket_nonce: u64,
         ticket_signature: vector<u8>,
@@ -1340,7 +1503,7 @@ module singuhunt::singuhunt {
         assert!(game.hunt_active, E_HUNT_NOT_ACTIVE);
         assert!(now <= game.hunt_end_time, E_HUNT_EXPIRED);
         assert!(get_hunt_mode(game) == MODE_DEEP_DECRYPT, E_INVALID_MODE);
-        assert!(game.ticket_signer != @0x0, E_TICKET_SIGNER_NOT_SET);
+        assert!(game.ticket_signer_public_key.length() == 32, E_TICKET_SIGNER_NOT_SET);
         assert!(now <= ticket_expires_at_ms, E_TICKET_EXPIRED);
         assert!(
             dynamic_field::exists_(&game.id, RegPlayerKey { epoch, player }),
@@ -1359,11 +1522,12 @@ module singuhunt::singuhunt {
         );
         let ticket_key = claim_ticket_key(&decrypt_message);
         assert!(!game.used_claim_tickets.contains(ticket_key), E_TICKET_REPLAY);
+        let decrypt_digest = std_hash::sha3_256(decrypt_message);
         assert!(
-            sig_verify::verify_personal_message_signature(
-                decrypt_message,
+            sig_verify::verify_hashed_message_signature(
                 ticket_signature,
-                game.ticket_signer,
+                game.ticket_signer_public_key,
+                decrypt_digest,
             ),
             E_INVALID_TICKET,
         );
@@ -1386,6 +1550,7 @@ module singuhunt::singuhunt {
 
         mint_achievement_to(
             game,
+            achievement_treasury,
             player,
             epoch,
             now,
@@ -1403,6 +1568,7 @@ module singuhunt::singuhunt {
 
     public entry fun claim_team_achievement(
         game: &mut GameState,
+        achievement_treasury: &mut AchievementTreasury,
         assembly_id: address,
         ticket_expires_at_ms: u64,
         ticket_nonce: u64,
@@ -1417,7 +1583,7 @@ module singuhunt::singuhunt {
         assert!(game.hunt_active, E_HUNT_NOT_ACTIVE);
         assert!(now <= game.hunt_end_time, E_HUNT_EXPIRED);
         assert!(get_hunt_mode(game) == MODE_TEAM_RACE, E_NOT_TEAM_MODE);
-        assert!(game.ticket_signer != @0x0, E_TICKET_SIGNER_NOT_SET);
+        assert!(game.ticket_signer_public_key.length() == 32, E_TICKET_SIGNER_NOT_SET);
         assert!(now <= ticket_expires_at_ms, E_TICKET_EXPIRED);
         assert!(assembly_id == game.end_gate, E_INVALID_DELIVER_GATE);
         assert!(
@@ -1435,11 +1601,12 @@ module singuhunt::singuhunt {
         );
         let ticket_key = claim_ticket_key(&deliver_message);
         assert!(!game.used_claim_tickets.contains(ticket_key), E_DELIVER_TICKET_REPLAY);
+        let deliver_digest = std_hash::sha3_256(deliver_message);
         assert!(
-            sig_verify::verify_personal_message_signature(
-                deliver_message,
+            sig_verify::verify_hashed_message_signature(
                 ticket_signature,
-                game.ticket_signer,
+                game.ticket_signer_public_key,
+                deliver_digest,
             ),
             E_INVALID_TICKET,
         );
@@ -1495,9 +1662,9 @@ module singuhunt::singuhunt {
         let nft_name = b"Singu Hunt award - Team Race";
         let nft_description = b"Awarded to every member of a winning Team Race squad that completed all checkpoints and returned to base in time.";
 
-        mint_achievement_to(game, member_1, epoch, now, nft_name, nft_description, ctx);
-        mint_achievement_to(game, member_2, epoch, now, nft_name, nft_description, ctx);
-        mint_achievement_to(game, member_3, epoch, now, nft_name, nft_description, ctx);
+        mint_achievement_to(game, achievement_treasury, member_1, epoch, now, nft_name, nft_description, ctx);
+        mint_achievement_to(game, achievement_treasury, member_2, epoch, now, nft_name, nft_description, ctx);
+        mint_achievement_to(game, achievement_treasury, member_3, epoch, now, nft_name, nft_description, ctx);
 
         event::emit(TeamFinished {
             epoch,
@@ -1510,7 +1677,10 @@ module singuhunt::singuhunt {
     /// Deposit the required number of Singu at the end gate to claim achievement.
     public entry fun claim_achievement(
         game: &mut GameState,
-        mut balls: vector<DragonBall>,
+        shard_treasury: &mut SinguShardTreasury,
+        achievement_treasury: &mut AchievementTreasury,
+        mut shard_records: vector<SinguShardRecord>,
+        mut shard_tokens: vector<Token<SINGU_SHARD_TOKEN>>,
         clock: &Clock,
         ctx: &mut TxContext,
     ) {
@@ -1521,7 +1691,8 @@ module singuhunt::singuhunt {
 
         assert!(game.hunt_active, E_HUNT_NOT_ACTIVE);
         assert!(now <= game.hunt_end_time, E_HUNT_EXPIRED);
-        assert!(balls.length() == game.required_singu_count, E_INCOMPLETE_COLLECTION);
+        assert!(shard_records.length() == game.required_singu_count, E_INCOMPLETE_COLLECTION);
+        assert!(shard_tokens.length() == game.required_singu_count, E_INCOMPLETE_COLLECTION);
 
         // Check registration (if registration was used for this epoch)
         if (dynamic_field::exists_(&game.id, RegCountKey { epoch })) {
@@ -1541,31 +1712,36 @@ module singuhunt::singuhunt {
         // Verify all required balls, current epoch, owned by player, and unique by index.
         let mut i: u64 = 0;
 
-        while (i < balls.length()) {
-            let ball = &balls[i];
-            assert!(ball.epoch == epoch, E_INCOMPLETE_COLLECTION);
-            assert!(ball.collector == player, E_NOT_TOKEN_OWNER);
-            assert!(ball.delivered, E_BALL_NOT_DELIVERED);
+        while (i < shard_records.length()) {
+            let shard_record = &shard_records[i];
+            let shard_token = &shard_tokens[i];
+            assert!(shard_record.epoch == epoch, E_INCOMPLETE_COLLECTION);
+            assert!(shard_record.collector == player, E_NOT_TOKEN_OWNER);
+            assert!(shard_record.delivered, E_BALL_NOT_DELIVERED);
+            assert!(singu_shard_token::value(shard_token) == 1, E_INVALID_BALL);
 
             let mut j: u64 = i + 1;
-            while (j < balls.length()) {
-                let other_ball = &balls[j];
-                assert!(ball.star_index != other_ball.star_index, E_INCOMPLETE_COLLECTION);
+            while (j < shard_records.length()) {
+                let other_shard = &shard_records[j];
+                assert!(shard_record.shard_index != other_shard.shard_index, E_INCOMPLETE_COLLECTION);
                 j = j + 1;
             };
             i = i + 1;
         };
 
-        // Burn all required balls
+        // Burn all required shard records and closed-loop shard tokens.
         let mut j: u64 = 0;
         while (j < game.required_singu_count) {
-            let ball = balls.pop_back();
-            let DragonBall { id, epoch: e, star_index: si, gate_id: _, gate_name: _, expires_at: _, collector: _, delivered: _, delivered_at: _ } = ball;
-            event::emit(DragonBallBurned { epoch: e, star_index: si, burner: player });
+            let shard_record = shard_records.pop_back();
+            let shard_token = shard_tokens.pop_back();
+            singu_shard_token::burn(shard_treasury, shard_token, ctx);
+            let SinguShardRecord { id, epoch: e, shard_index: si, gate_id: _, gate_name: _, expires_at: _, collector: _, delivered: _, delivered_at: _ } = shard_record;
+            event::emit(SinguShardBurned { epoch: e, shard_index: si, burner: player });
             object::delete(id);
             j = j + 1;
         };
-        balls.destroy_empty();
+        shard_records.destroy_empty();
+        shard_tokens.destroy_empty();
 
         // Increment winner count for this epoch
         if (dynamic_field::exists_(&game.id, WinnerCountKey { epoch })) {
@@ -1580,6 +1756,7 @@ module singuhunt::singuhunt {
 
         mint_achievement_to(
             game,
+            achievement_treasury,
             player,
             epoch,
             now,
@@ -1589,15 +1766,20 @@ module singuhunt::singuhunt {
         );
     }
 
-    /// Burn expired dragon ball
-    public entry fun burn_expired_ball(
-        ball: DragonBall,
+    /// Burn expired singu shard
+    public entry fun burn_expired_singu_shard(
+        shard_treasury: &mut SinguShardTreasury,
+        shard_record: SinguShardRecord,
+        shard_token: Token<SINGU_SHARD_TOKEN>,
         clock: &Clock,
+        ctx: &mut TxContext,
     ) {
         let now = clock::timestamp_ms(clock);
-        assert!(now > ball.expires_at, E_HUNT_NOT_ACTIVE);
-        let DragonBall { id, epoch, star_index, gate_id: _, gate_name: _, expires_at: _, collector, delivered: _, delivered_at: _ } = ball;
-        event::emit(DragonBallBurned { epoch, star_index, burner: collector });
+        assert!(singu_shard_token::value(&shard_token) == 1, E_INVALID_BALL);
+        assert!(now > shard_record.expires_at, E_HUNT_NOT_ACTIVE);
+        singu_shard_token::burn(shard_treasury, shard_token, ctx);
+        let SinguShardRecord { id, epoch, shard_index, gate_id: _, gate_name: _, expires_at: _, collector, delivered: _, delivered_at: _ } = shard_record;
+        event::emit(SinguShardBurned { epoch, shard_index, burner: collector });
         object::delete(id);
     }
 
@@ -1615,8 +1797,8 @@ module singuhunt::singuhunt {
         (game.end_gate, game.end_gate_name)
     }
 
-    public fun get_ball_gates(game: &GameState): &vector<GateLocation> {
-        &game.ball_gates
+    public fun get_shard_gates(game: &GameState): &vector<GateLocation> {
+        &game.shard_gates
     }
 
     public fun get_total_achievements(game: &GameState): u64 {

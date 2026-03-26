@@ -3,3 +3,4 @@ move-contracts/singuhunt/Move.lock
 move-contracts/singuhunt/Published.toml
 *.log
 .DS_Store
+cloudflare-proxy/
