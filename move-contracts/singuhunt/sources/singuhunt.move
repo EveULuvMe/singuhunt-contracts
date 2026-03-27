@@ -8,6 +8,7 @@
 /// 5. Earn a permanent, non-transferable achievement NFT
 module singuhunt::singuhunt {
     use std::hash as std_hash;
+    use std::type_name;
     use sui::balance::{Self, Balance};
     use sui::clock::{Self, Clock};
     use sui::coin::{Self, Coin};
@@ -65,6 +66,7 @@ module singuhunt::singuhunt {
     const E_INVALID_REGISTRATION_FEE: u64 = 40;
     const E_REGISTRATION_PASS_MISMATCH: u64 = 41;
     const E_INVALID_GATE_ORDER: u64 = 42;
+    const E_INVALID_REGISTRATION_COIN: u64 = 43;
 
     // ============ Constants ============
     const DRAGON_BALL_COUNT: u64 = 7;
@@ -81,12 +83,14 @@ module singuhunt::singuhunt {
     const MODE_LARGE_ARENA: u8 = 4;
     const MODE_OBSTACLE_RUN: u8 = 5;
 
-    // Registration fee schedule in LUX smallest units (9 decimals)
-    const REG_FEE_SOLO_RACE: u64 = 12_000_000_000;     // 12 LUX
-    const REG_FEE_TEAM_RACE: u64 = 15_000_000_000;     // 15 LUX
-    const REG_FEE_DEEP_DECRYPT: u64 = 30_000_000_000;  // 30 LUX
-    const REG_FEE_LARGE_ARENA: u64 = 22_000_000_000;   // 22 LUX
-    const REG_FEE_OBSTACLE_RUN: u64 = 18_000_000_000;  // 18 LUX
+    // Registration fee schedule in EVE smallest units (9 decimals)
+    const REG_FEE_SOLO_RACE: u64 = 1_000_000_000;      // 1 EVE
+    const REG_FEE_TEAM_RACE: u64 = 1_000_000_000;      // 1 EVE
+    const REG_FEE_DEEP_DECRYPT: u64 = 1_000_000_000;   // 1 EVE
+    const REG_FEE_LARGE_ARENA: u64 = 1_000_000_000;    // 1 EVE
+    const REG_FEE_OBSTACLE_RUN: u64 = 1_000_000_000;   // 1 EVE
+    const REGISTRATION_FEE_RECEIVER: address = @0x8d2c81bce43d5c7c34ea9f6319a08d6ec69d4a45d3311616f3d2c5351a87d967;
+    const EVE_COIN_TYPE_NAME: vector<u8> = b"f0446b93345c1118f21239d7ac58fb82d005219b2016e100f074e4d17162a465::EVE::EVE";
 
     // ============ Dynamic Field Keys ============
 
@@ -463,6 +467,13 @@ module singuhunt::singuhunt {
         transfer::share_object(game_state);
     }
 
+    fun assert_registration_coin_type<T>() {
+        assert!(
+            type_name::with_defining_ids<T>().as_string().as_bytes() == EVE_COIN_TYPE_NAME,
+            E_INVALID_REGISTRATION_COIN,
+        );
+    }
+
     // ============ Admin: Configure Gates ============
 
     /// Set the start gate (bulletin board)
@@ -707,6 +718,53 @@ module singuhunt::singuhunt {
 
         balance::join(&mut game.registration_fee_pool, coin::into_balance(fee_coin));
         game.total_lux_collected = game.total_lux_collected + paid_fee;
+
+        let pass = RegistrationPass {
+            id: object::new(ctx),
+            epoch: next_epoch,
+            mode,
+            fee_paid_lux: paid_fee,
+            issued_at: now,
+        };
+
+        event::emit(RegistrationPassPurchased {
+            next_epoch,
+            player,
+            mode,
+            fee_paid_lux: paid_fee,
+        });
+
+        transfer::transfer(pass, player);
+    }
+
+    /// EVE-only registration path. Charges 1 EVE and forwards the fee directly
+    /// to the designated recipient wallet while minting a RegistrationPass.
+    public entry fun buy_registration_pass_eve<T>(
+        game: &mut GameState,
+        fee_coin: Coin<T>,
+        clock: &Clock,
+        ctx: &mut TxContext,
+    ) {
+        assert_registration_coin_type<T>();
+
+        let now = clock::timestamp_ms(clock);
+        let player = ctx.sender();
+        let next_epoch = game.current_epoch + 1;
+        let mode = *dynamic_field::borrow<RegModeKey, u8>(&game.id, RegModeKey {});
+        let required_fee = registration_fee_for_mode(mode);
+        let paid_fee = coin::value(&fee_coin);
+
+        assert!(
+            dynamic_field::exists_(&game.id, RegPhaseKey {}) &&
+            *dynamic_field::borrow<RegPhaseKey, bool>(&game.id, RegPhaseKey {}),
+            E_REGISTRATION_NOT_OPEN,
+        );
+
+        let reg_end = *dynamic_field::borrow<RegEndTimeKey, u64>(&game.id, RegEndTimeKey {});
+        assert!(now <= reg_end, E_REGISTRATION_NOT_OPEN);
+        assert!(paid_fee == required_fee, E_INVALID_REGISTRATION_FEE);
+
+        transfer::public_transfer(fee_coin, REGISTRATION_FEE_RECEIVER);
 
         let pass = RegistrationPass {
             id: object::new(ctx),

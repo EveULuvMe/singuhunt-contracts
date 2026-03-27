@@ -17,11 +17,11 @@ const PLAYER_3: address = @0xD;
 
 #[test]
 fun test_registration_fees_cover_all_five_modes() {
-    assert!(singuhunt::registration_fee_for_mode(1) == 12_000_000_000, 0);
-    assert!(singuhunt::registration_fee_for_mode(2) == 15_000_000_000, 1);
-    assert!(singuhunt::registration_fee_for_mode(3) == 30_000_000_000, 2);
-    assert!(singuhunt::registration_fee_for_mode(4) == 22_000_000_000, 3);
-    assert!(singuhunt::registration_fee_for_mode(5) == 18_000_000_000, 4);
+    assert!(singuhunt::registration_fee_for_mode(1) == 1_000_000_000, 0);
+    assert!(singuhunt::registration_fee_for_mode(2) == 1_000_000_000, 1);
+    assert!(singuhunt::registration_fee_for_mode(3) == 1_000_000_000, 2);
+    assert!(singuhunt::registration_fee_for_mode(4) == 1_000_000_000, 3);
+    assert!(singuhunt::registration_fee_for_mode(5) == 1_000_000_000, 4);
 }
 
 #[test]
