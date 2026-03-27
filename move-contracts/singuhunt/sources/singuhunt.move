@@ -64,6 +64,7 @@ module singuhunt::singuhunt {
     const E_INVALID_REVEAL_TIME: u64 = 39;
     const E_INVALID_REGISTRATION_FEE: u64 = 40;
     const E_REGISTRATION_PASS_MISMATCH: u64 = 41;
+    const E_INVALID_GATE_ORDER: u64 = 42;
 
     // ============ Constants ============
     const DRAGON_BALL_COUNT: u64 = 7;
@@ -139,6 +140,9 @@ module singuhunt::singuhunt {
 
     /// Per-team per-gate completion marker.
     public struct TeamGateClaimKey has copy, drop, store { epoch: u64, team_id: u64, shard_index: u64 }
+
+    /// Maps EVE Character ID (u32) → registered player. Used by turret for whitelist/blacklist lookup.
+    public struct CharacterRegKey has copy, drop, store { epoch: u64, character_id: u32 }
 
     /// Maximum number of winners for an epoch (calculated from registration count)
     public struct WinnerSlotsKey has copy, drop, store { epoch: u64 }
@@ -722,11 +726,10 @@ module singuhunt::singuhunt {
         transfer::transfer(pass, player);
     }
 
-    /// Direct registration path kept for backwards compatibility with the current frontend.
-    /// This immediately binds the spot to the current sender instead of minting a transferable pass.
-    public entry fun register_for_hunt(
+    fun register_for_hunt_internal(
         game: &mut GameState,
         fee_coin: Coin<LUX>,
+        character_id: u32,
         clock: &Clock,
         ctx: &mut TxContext,
     ) {
@@ -755,6 +758,11 @@ module singuhunt::singuhunt {
         balance::join(&mut game.registration_fee_pool, coin::into_balance(fee_coin));
         game.total_lux_collected = game.total_lux_collected + paid_fee;
 
+        // Store character_id → player mapping for turret whitelist/blacklist lookup
+        if (character_id != 0 && !dynamic_field::exists_(&game.id, CharacterRegKey { epoch: next_epoch, character_id })) {
+            dynamic_field::add(&mut game.id, CharacterRegKey { epoch: next_epoch, character_id }, player);
+        };
+
         let count = dynamic_field::borrow_mut<RegCountKey, u64>(&mut game.id, RegCountKey { epoch: next_epoch });
         *count = *count + 1;
         let registration_index = *count;
@@ -768,6 +776,28 @@ module singuhunt::singuhunt {
             reg_count: registration_index,
             fee_paid_lux: paid_fee,
         });
+    }
+
+    /// Direct registration path kept for backwards compatibility with the current frontend.
+    /// This immediately binds the spot to the current sender instead of minting a transferable pass.
+    public entry fun register_for_hunt(
+        game: &mut GameState,
+        fee_coin: Coin<LUX>,
+        clock: &Clock,
+        ctx: &mut TxContext,
+    ) {
+        register_for_hunt_internal(game, fee_coin, 0, clock, ctx);
+    }
+
+    /// Extended registration entrypoint that also records EVE character_id for turret logic.
+    public entry fun register_for_hunt_with_character_id(
+        game: &mut GameState,
+        fee_coin: Coin<LUX>,
+        character_id: u32,
+        clock: &Clock,
+        ctx: &mut TxContext,
+    ) {
+        register_for_hunt_internal(game, fee_coin, character_id, clock, ctx);
     }
 
     /// Activate a purchased registration pass. This binds the pass to the current owner
@@ -1328,6 +1358,17 @@ module singuhunt::singuhunt {
         } else {
             assert!(!gate.ball_collected, E_BALL_ALREADY_TAKEN);
 
+            // Obstacle Run requires sequential gate collection (0, 1, 2, ...)
+            if (hunt_mode == MODE_OBSTACLE_RUN) {
+                let collections = game.epoch_collections.borrow(epoch);
+                let player_count = if (collections.contains(player)) {
+                    *collections.borrow(player)
+                } else {
+                    0
+                };
+                assert!(shard_index == player_count, E_INVALID_GATE_ORDER);
+            };
+
             // Mark as collected
             let gate_mut = &mut game.shard_gates[shard_index];
             gate_mut.ball_collected = true;
@@ -1841,6 +1882,12 @@ module singuhunt::singuhunt {
     /// Check if a player is registered for an epoch.
     public fun is_player_registered(game: &GameState, epoch: u64, player: address): bool {
         dynamic_field::exists_(&game.id, RegPlayerKey { epoch, player })
+    }
+
+    /// Check if an EVE Character (by object ID) is registered for an epoch.
+    /// Used by turret contracts for whitelist/blacklist lookup.
+    public fun is_character_registered(game: &GameState, epoch: u64, character_id: u32): bool {
+        dynamic_field::exists_(&game.id, CharacterRegKey { epoch, character_id })
     }
 
     /// Get winner slots for an epoch.
