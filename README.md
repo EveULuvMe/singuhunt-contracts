@@ -2,7 +2,9 @@
 
 Sui Move contracts for the Singu Hunt game loop.
 
-This repository now contains the current on-chain gameplay layer for Singu Hunt, including registration, EVE-denominated entry fees, multi-mode hunt logic, shard collection and delivery, achievement minting, ticket verification, and bulletin-board support for the in-world SSU flow.
+This repository contains the current on-chain gameplay layer for Singu Hunt, including registration, EVE-denominated entry fees, multi-mode hunt logic, shard collection and delivery, achievement minting, ticket verification, and bulletin-board support for the in-world SSU flow.
+
+No production links are included in this README.
 
 ## English
 
@@ -115,9 +117,18 @@ admin opens registration
   -> successful players claim AchievementNFT
 ```
 
-### Frontend / App Relationship
+```mermaid
+flowchart LR
+    A[open_registration] --> B[buy_registration_pass or buy_registration_pass_eve]
+    B --> C[activate_registration]
+    C --> D[start_hunt]
+    D --> E[collect_singu_shard]
+    E --> F[deliver_singu_shard]
+    F --> G[claim_achievement / claim_team_achievement / claim_decrypt_achievement]
+    G --> H[AchievementNFT]
+```
 
-This package is consumed by:
+### Frontend / App Relationship
 
 - `singuhunt-app`
   Player-facing frontend for registration, hunt participation, shard interaction, and claim flow.
@@ -126,29 +137,23 @@ This package is consumed by:
 - `singuvault-app`
   Player-facing frontend that redeems the achievement after it is earned here.
 
-```text
-singuhunt-contracts -> defines gameplay, RegistrationPass, AchievementNFT
-singuhunt-app       -> calls hunt contract entry functions
-singuvault-contracts -> accepts AchievementNFT redemption later
-singuvault-app      -> shows the post-hunt reward path
+```mermaid
+flowchart LR
+    HC[singuhunt-contracts] -->|AchievementNFT| VC[singuvault-contracts]
+    HA[singuhunt-app] -->|registration / hunt / claim| HC
+    VA[singuvault-app] -->|redeem and vault UI| VC
 ```
 
-### Current App-Side IDs And Config
+### Current App-Side Config Surface
 
-The current `singuhunt-app` frontend defaults to:
+The current `singuhunt-app` expects env / config values for:
 
 - `VITE_GAME_STATE_ID`
-  `0x3164b8a46471bc82f9e781391540802431de8e6000b4bb68a7ada6bbe07dd833`
 - `VITE_SINGUHUNT_PACKAGE_ID`
-  `0xbce47d3e624f2478bdd77a114931b1af541929032da3db01cb6b6d4378aba1ab`
 - `VITE_SINGUHUNT_CALL_PACKAGE_ID`
-  falls back to `VITE_SINGUHUNT_PACKAGE_ID`
 - `VITE_EVE_COIN_TYPE`
-  `0xf0446b93345c1118f21239d7ac58fb82d005219b2016e100f074e4d17162a465::EVE::EVE`
 - `VITE_SUI_RPC_URL`
-  `https://fullnode.testnet.sui.io:443`
 - `VITE_TICKET_API_URL`
-  `/api/gates`
 
 Common object IDs expected by the frontend:
 
@@ -161,10 +166,10 @@ If the package or shared objects are republished, update the frontend env values
 ### Integration Notes
 
 - `Move.toml` depends on the local `singuvault` package.
-- `singuhunt.move` still imports `singuvault::lux::LUX`, so vault-side renames must be coordinated.
+- `singuhunt.move` now imports `singuvault::eve::EVE`.
 - `buy_registration_pass_eve<T>` enforces the configured EVE coin type and forwards the fee to `REGISTRATION_FEE_RECEIVER`.
-- The older `buy_registration_pass` path still exists and consumes `Coin<LUX>`.
-- The achievement image URL is currently hardcoded to `https://dapp-seven-henna.vercel.app/NFT.png`.
+- `buy_registration_pass` now also consumes `Coin<EVE>`.
+- The achievement image path is hardcoded in code and should stay aligned with the frontend asset path.
 
 ### Build And Publish
 

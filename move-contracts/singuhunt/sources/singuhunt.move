@@ -18,7 +18,7 @@ module singuhunt::singuhunt {
     use sui::table::{Self, Table};
     use sui::token::Token;
     use sui::bcs;
-    use singuvault::lux::LUX;
+    use singuvault::eve::EVE;
     use singuhunt::singu_shard_token::{Self as singu_shard_token, SINGU_SHARD_TOKEN, SinguShardTreasury};
     use singuhunt::achievement_token::{Self as achievement_token, AchievementTreasury};
     use singuhunt::sig_verify;
@@ -212,7 +212,7 @@ module singuhunt::singuhunt {
         id: UID,
         epoch: u64,
         mode: u8,
-        fee_paid_lux: u64,
+        fee_paid_eve: u64,
         issued_at: u64,
     }
 
@@ -265,12 +265,12 @@ module singuhunt::singuhunt {
         ticket_signer_public_key: vector<u8>,
         /// Track used claim tickets by digest to block replay attacks
         used_claim_tickets: Table<address, bool>,
-        /// Accumulated registration fees collected in LUX
-        registration_fee_pool: Balance<LUX>,
+        /// Accumulated registration fees collected in EVE
+        registration_fee_pool: Balance<EVE>,
         /// Stats
         total_achievements: u64,
         total_hunts: u64,
-        total_lux_collected: u64,
+        total_eve_collected: u64,
     }
 
     /// Singu shard metadata record. The transferable asset is a closed-loop Token<SINGU_SHARD>.
@@ -369,21 +369,21 @@ module singuhunt::singuhunt {
         next_epoch: u64,
         mode: u8,
         reg_end_time: u64,
-        registration_fee_lux: u64,
+        registration_fee_eve: u64,
     }
 
     public struct PlayerRegistered has copy, drop {
         next_epoch: u64,
         player: address,
         reg_count: u64,
-        fee_paid_lux: u64,
+        fee_paid_eve: u64,
     }
 
     public struct RegistrationPassPurchased has copy, drop {
         next_epoch: u64,
         player: address,
         mode: u8,
-        fee_paid_lux: u64,
+        fee_paid_eve: u64,
     }
 
     public struct RegistrationActivated has copy, drop {
@@ -391,7 +391,7 @@ module singuhunt::singuhunt {
         player: address,
         mode: u8,
         reg_count: u64,
-        fee_paid_lux: u64,
+        fee_paid_eve: u64,
     }
 
     public struct RegistrationFeesWithdrawn has copy, drop {
@@ -462,7 +462,7 @@ module singuhunt::singuhunt {
             registration_fee_pool: balance::zero(),
             total_achievements: 0,
             total_hunts: 0,
-            total_lux_collected: 0,
+            total_eve_collected: 0,
         };
         transfer::share_object(game_state);
     }
@@ -685,14 +685,14 @@ module singuhunt::singuhunt {
             next_epoch,
             mode,
             reg_end_time: reg_end_time_ms,
-            registration_fee_lux: registration_fee_for_mode(mode),
+            registration_fee_eve: registration_fee_for_mode(mode),
         });
     }
 
     /// Player purchases a transferable registration pass for the upcoming hunt session.
     public entry fun buy_registration_pass(
         game: &mut GameState,
-        fee_coin: Coin<LUX>,
+        fee_coin: Coin<EVE>,
         clock: &Clock,
         ctx: &mut TxContext,
     ) {
@@ -717,13 +717,13 @@ module singuhunt::singuhunt {
         assert!(paid_fee == required_fee, E_INVALID_REGISTRATION_FEE);
 
         balance::join(&mut game.registration_fee_pool, coin::into_balance(fee_coin));
-        game.total_lux_collected = game.total_lux_collected + paid_fee;
+        game.total_eve_collected = game.total_eve_collected + paid_fee;
 
         let pass = RegistrationPass {
             id: object::new(ctx),
             epoch: next_epoch,
             mode,
-            fee_paid_lux: paid_fee,
+            fee_paid_eve: paid_fee,
             issued_at: now,
         };
 
@@ -731,7 +731,7 @@ module singuhunt::singuhunt {
             next_epoch,
             player,
             mode,
-            fee_paid_lux: paid_fee,
+            fee_paid_eve: paid_fee,
         });
 
         transfer::transfer(pass, player);
@@ -770,7 +770,7 @@ module singuhunt::singuhunt {
             id: object::new(ctx),
             epoch: next_epoch,
             mode,
-            fee_paid_lux: paid_fee,
+            fee_paid_eve: paid_fee,
             issued_at: now,
         };
 
@@ -778,7 +778,7 @@ module singuhunt::singuhunt {
             next_epoch,
             player,
             mode,
-            fee_paid_lux: paid_fee,
+            fee_paid_eve: paid_fee,
         });
 
         transfer::transfer(pass, player);
@@ -786,7 +786,7 @@ module singuhunt::singuhunt {
 
     fun register_for_hunt_internal(
         game: &mut GameState,
-        fee_coin: Coin<LUX>,
+        fee_coin: Coin<EVE>,
         character_id: u32,
         clock: &Clock,
         ctx: &mut TxContext,
@@ -814,7 +814,7 @@ module singuhunt::singuhunt {
 
         dynamic_field::add(&mut game.id, RegPlayerKey { epoch: next_epoch, player }, true);
         balance::join(&mut game.registration_fee_pool, coin::into_balance(fee_coin));
-        game.total_lux_collected = game.total_lux_collected + paid_fee;
+        game.total_eve_collected = game.total_eve_collected + paid_fee;
 
         // Store character_id → player mapping for turret whitelist/blacklist lookup
         if (character_id != 0 && !dynamic_field::exists_(&game.id, CharacterRegKey { epoch: next_epoch, character_id })) {
@@ -832,7 +832,7 @@ module singuhunt::singuhunt {
             next_epoch,
             player,
             reg_count: registration_index,
-            fee_paid_lux: paid_fee,
+            fee_paid_eve: paid_fee,
         });
     }
 
@@ -840,7 +840,7 @@ module singuhunt::singuhunt {
     /// This immediately binds the spot to the current sender instead of minting a transferable pass.
     public entry fun register_for_hunt(
         game: &mut GameState,
-        fee_coin: Coin<LUX>,
+        fee_coin: Coin<EVE>,
         clock: &Clock,
         ctx: &mut TxContext,
     ) {
@@ -850,7 +850,7 @@ module singuhunt::singuhunt {
     /// Extended registration entrypoint that also records EVE character_id for turret logic.
     public entry fun register_for_hunt_with_character_id(
         game: &mut GameState,
-        fee_coin: Coin<LUX>,
+        fee_coin: Coin<EVE>,
         character_id: u32,
         clock: &Clock,
         ctx: &mut TxContext,
@@ -895,7 +895,7 @@ module singuhunt::singuhunt {
         dynamic_field::add(&mut game.id, RegPositionKey { epoch: next_epoch, player }, registration_index);
         dynamic_field::add(&mut game.id, RegOrderKey { epoch: next_epoch, order: registration_index }, player);
 
-        let RegistrationPass { id, epoch: _, mode: _, fee_paid_lux, issued_at: _ } = pass;
+        let RegistrationPass { id, epoch: _, mode: _, fee_paid_eve, issued_at: _ } = pass;
         object::delete(id);
 
         event::emit(RegistrationActivated {
@@ -903,13 +903,13 @@ module singuhunt::singuhunt {
             player,
             mode: current_mode,
             reg_count: registration_index,
-            fee_paid_lux,
+            fee_paid_eve,
         });
         event::emit(PlayerRegistered {
             next_epoch,
             player,
             reg_count: registration_index,
-            fee_paid_lux,
+            fee_paid_eve,
         });
     }
 
@@ -1988,8 +1988,8 @@ module singuhunt::singuhunt {
         }
     }
 
-    public fun total_lux_collected(game: &GameState): u64 {
-        game.total_lux_collected
+    public fun total_eve_collected(game: &GameState): u64 {
+        game.total_eve_collected
     }
 
     public fun registration_fee_pool_balance(game: &GameState): u64 {
@@ -2282,7 +2282,7 @@ module singuhunt::singuhunt {
             registration_fee_pool: balance::zero(),
             total_achievements: 0,
             total_hunts: 0,
-            total_lux_collected: 0,
+            total_eve_collected: 0,
         }
     }
 
