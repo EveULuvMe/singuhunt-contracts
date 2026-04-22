@@ -1,6 +1,6 @@
-move-contracts/singuhunt/build/
-move-contracts/singuhunt/Move.lock
-move-contracts/singuhunt/Published.toml
+move-contracts/**/build/
+move-contracts/**/Move.lock
+move-contracts/**/Published.toml
 *.log
 .DS_Store
 cloudflare-proxy/
