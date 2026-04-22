@@ -6,6 +6,8 @@ This repository contains the current on-chain gameplay layer for Singu Hunt, inc
 
 No production links are included in this README.
 
+Join the Discord community at <https://discord.gg/5bGUfNngHw> to report technical issues or share suggestions.
+
 ## English
 
 ### What This Package Does
@@ -18,6 +20,43 @@ No production links are included in this README.
 - supports solo race, team race, deep decrypt, large arena, and obstacle run modes
 - mints `AchievementNFT`
 - provides SSU bulletin-board support
+
+### System Architecture
+
+Three-tier composition: off-chain frontend + ticket signer; on-chain `singuhunt` package owning shared `GameState` and treasuries; downstream `singuvault-contracts` consumes the minted `AchievementNFT`.
+
+```mermaid
+graph TB
+    subgraph "Off-chain"
+        App[singuhunt-app SPA]
+        Backend[Ticket Signer Service]
+    end
+    subgraph "Sui Chain — singuhunt package"
+        GameState[(GameState shared)]
+        ShardTreasury[(SinguShardTreasury)]
+        AchievementTreasury[(AchievementTreasury)]
+        Bulletin[(BulletinBoard)]
+        Reg[RegistrationPass]
+        Record[SinguShardRecord]
+        NFT[AchievementNFT]
+    end
+    subgraph "Downstream"
+        Vault[singuvault-contracts]
+    end
+
+    App -->|buy_registration_pass / _eve| GameState
+    GameState --> Reg
+    App -->|activate_registration| GameState
+    App -->|register_for_hunt| GameState
+    App -->|collect_singu_shard| Record
+    ShardTreasury --> Record
+    App -->|deliver_singu_shard| GameState
+    Backend -->|signs claim ticket| App
+    App -->|claim_achievement w/ ticket| GameState
+    AchievementTreasury --> NFT
+    NFT -->|redeemable in| Vault
+    App -->|create / visit| Bulletin
+```
 
 ### Repository Layout
 
