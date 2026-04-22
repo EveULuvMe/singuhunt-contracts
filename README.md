@@ -60,22 +60,22 @@ graph TB
 
 ### Repository Layout
 
-`move-contracts/singuhunt/sources/singuhunt.move`
+`move-contracts/singuhunt/gate-and-ssu/sources/singuhunt.move`
 Core game state, registration, hunt lifecycle, shard collection, shard delivery, and mode-specific achievement claim logic.
 
-`move-contracts/singuhunt/sources/achievement_token.move`
+`move-contracts/singuhunt/gate-and-ssu/sources/achievement_token.move`
 Achievement treasury and token primitives.
 
-`move-contracts/singuhunt/sources/singu_shard_token.move`
+`move-contracts/singuhunt/gate-and-ssu/sources/singu_shard_token.move`
 Shard treasury and token primitives used during live hunt sessions.
 
-`move-contracts/singuhunt/sources/sig_verify.move`
+`move-contracts/singuhunt/gate-and-ssu/sources/sig_verify.move`
 Ticket-signature verification helpers.
 
-`move-contracts/singuhunt/sources/bulletin_board.move`
+`move-contracts/singuhunt/gate-and-ssu/sources/bulletin_board.move`
 Bulletin-board state used by the SSU-style in-world interaction surface.
 
-`move-contracts/singuhunt/tests/singuhunt_tests.move`
+`move-contracts/singuhunt/gate-and-ssu/tests/singuhunt_tests.move`
 Unit tests covering solo race, team race, deep decrypt, large arena, and obstacle run claim paths.
 
 ### Main Objects
@@ -218,10 +218,10 @@ If the package or shared objects are republished, update the frontend env values
 
 ### Build And Publish
 
-Building requires the `singuvault-contracts` repo cloned alongside this repo at the relative path `../../../singuvault-contracts/move-contracts/singuvault` (as referenced in `Move.toml`).
+Building requires the `singuvault-contracts` repo cloned alongside this repo at the relative path `../../../../singuvault-contracts/move-contracts/singuvault` (as referenced in `Move.toml`).
 
 ```bash
-cd move-contracts/singuhunt
+cd move-contracts/singuhunt/gate-and-ssu
 sui move build
 sui client publish --gas-budget 200000000
 ```
@@ -229,7 +229,7 @@ sui client publish --gas-budget 200000000
 Current `Move.toml` references:
 
 - Sui framework `testnet-v1.66.2`
-- local dependency `../../../singuvault-contracts/move-contracts/singuvault`
+- local dependency `../../../../singuvault-contracts/move-contracts/singuvault`
 
 ## 中文
 
@@ -284,10 +284,10 @@ Current `Move.toml` references:
 
 ### 部署
 
-編譯前需要在相對路徑 `../../../singuvault-contracts/move-contracts/singuvault` 有 `singuvault-contracts` 倉庫（`Move.toml` 的 local dependency）。
+編譯前需要在相對路徑 `../../../../singuvault-contracts/move-contracts/singuvault` 有 `singuvault-contracts` 倉庫（`Move.toml` 的 local dependency）。
 
 ```bash
-cd move-contracts/singuhunt
+cd move-contracts/singuhunt/gate-and-ssu
 sui move build
 sui client publish --gas-budget 200000000
 ```

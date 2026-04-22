@@ -5,7 +5,7 @@ edition = "2024.beta"
 [dependencies]
 Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "testnet-v1.66.2", override = true }
 world = { local = "../world-compat" }
-singuhunt = { local = ".." }
+singuhunt = { local = "../gate-and-ssu" }
 
 [addresses]
 singu_turret = "0x0"
